@@ -16,7 +16,7 @@ use futures::{
 use codec::{Codec, Decode, Encode};
 
 // dependencies on substrate
-use sp_core::H256;
+use sp_core::{H256, Pair as TTPair};
 use sp_core::sr25519::{Pair, Public as AuthorityId, Signature, LocalizedSignature};
 use sp_runtime::traits::{Block as BlockT};
 use sp_consensus::{
@@ -40,7 +40,7 @@ use rhd::{Agreement, Committed, Communication, Misbehavior, Context as RhdContex
 pub struct RhdWorker {
     key: Pair,
     authorities: Vec<AuthorityId>,
-    parent_hash: Option<Hash>,
+    parent_hash: Hash,
 
     te_tx: Option<UnboundedSender<Communication>>,     // to engine tx, used in this caller layer
     fe_rx: Option<UnboundedReceiver<Communication>>,   // from engine rx, used in this caller layer
@@ -119,7 +119,11 @@ impl Future for RhdWorker {
                 Poll::Ready(Some(commit_msg)) => {
                     // the result of poll of agreement is Committed, deal with it
                     // cm_tx.unbounded_send(commit_msg);
-                    worker.cb_tx.unbounded_send(BftmlChannelMsg::CommitBlock(commit_msg));
+                    // [TODO]: convert Committed to BftProposal
+                    // here, we couldn't pass back Commited to lower level Bftml, Bftml doesn't
+                    // realize upper structure, and should not realize it.
+                    let bp = BftProposal{};
+                    worker.cb_tx.unbounded_send(BftmlChannelMsg::CommitBlock(bp));
 
                     // set back
                     worker.te_tx = None;
@@ -153,7 +157,7 @@ impl RhdWorker {
         RhdWorker {
             key,
             authorities,
-            parent_hash: None,
+            parent_hash: Default::default(),
 
             te_tx: None,
             fe_rx: None,
@@ -164,6 +168,7 @@ impl RhdWorker {
             ap_tx,
             gp_rx,
 
+            agreement_poller: None,
             proposing: false,
         }
     }
@@ -184,7 +189,7 @@ impl RhdWorker {
         let (fe_tx, fe_rx) = mpsc::unbounded::<Communication>();
 
         let n = self.authorities.len();
-        let max_faulty = n / 3 as u32;
+        let max_faulty = n / 3;
         let mut agreement = rhd::agree(
             rhd_context,
             n,
@@ -220,13 +225,13 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
     ) -> Result<(impl Future<Output = ()>, impl Future<Output = ()>), sp_consensus::Error> where
     B: BlockT + Clone + Eq,
 	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi<B> + 'static,
-    E: Environment<B> + Send + Sync,
+    E: Environment<B> + Send + Sync + std::marker::Unpin,
     E::Proposer: Proposer<B, Transaction = sp_api::TransactionFor<C, B>>,
     E::Error: std::fmt::Debug,
     sp_api::TransactionFor<C, B>: 'static,
-	SO: SyncOracle + Send + Sync + 'static,
-	S: SelectChain<B> + Send + Sync + 'static,
-	CAW: CanAuthorWith<B> + Send + Sync + 'static,
+	SO: SyncOracle + Send + Sync + 'static + std::marker::Unpin,
+	S: SelectChain<B> + Send + Sync + 'static + std::marker::Unpin,
+	CAW: CanAuthorWith<B> + Send + Sync + 'static + std::marker::Unpin,
     H: ExHashT,
 {
     // generate channels
@@ -239,6 +244,7 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
         client.clone(),
         block_import,
         proposer_factory,
+        network,
         imported_block_rx,
         tc_tx,
         ts_rx,

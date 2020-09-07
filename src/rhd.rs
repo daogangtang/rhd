@@ -1,12 +1,12 @@
 use std::pin::Pin;
 use std::collections::{
-    hash_map::{self, HashMap},
+    hash_map::{self, HashMap, Entry},
     HashSet, BTreeMap,
 };
-use sty::sync::Arc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use futures::{
-    Future, Stream,
+    Future, Stream, FutureExt,
     future::{self, poll_fn},
     task::{Context as FutureContext, Poll},
     channel::mpsc::{self, UnboundedSender, UnboundedReceiver, Sender, Receiver},
@@ -26,14 +26,15 @@ use codec::{Codec, Decode, Encode};
 
 // TODO: check this
 // LocalizedSignature couldn't be serialized in sr25519 ???
-use sp_core::sr25519::{Pair, Public as AuthorityId, Signature, LocalizedSignature};
+use sp_core::{H256, Pair};
+use sp_core::sr25519::{Pair as SrPair, Public as AuthorityId, Signature, LocalizedSignature};
 
 use sp_runtime::traits::{Hash as TTHash, BlakeTwo256};
-use sp_core::H256;
 
 use super::{
     RhdWorker,
     BftmlChannelMsg,
+    BftProposal,
 };
 
 type Hash = H256;
@@ -44,7 +45,7 @@ type Digest = H256;
 
 
 /// Abstraction over a block header for a substrate chain.
-#[derive(PartialEq, Eq, Clone, Encode, Decode)]
+#[derive(PartialEq, Eq, Clone, Encode, Decode, Debug)]
 pub struct Header {
 	/// The block number.
 	pub number: u64,
@@ -61,7 +62,7 @@ pub struct Header {
 type Extrinsic = Vec<u8>;
 
 /// Abstraction over a substrate block.
-#[derive(PartialEq, Eq, Clone, Encode, Decode)]
+#[derive(PartialEq, Eq, Clone, Encode, Decode, Debug)]
 pub struct Block {
 	/// The block header.
 	pub header: Header,
@@ -81,7 +82,8 @@ impl Block {
     }
 }
 
-type Candidate = Block;
+// type Candidate = Block;
+type Candidate = BftProposal;
 
 /// Justification for some state at a given round.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -91,7 +93,7 @@ pub struct UncheckedJustification {
 	/// The digest prepared for.
 	pub digest: Digest,
 	/// Signatures for the prepare messages.
-	pub signatures: Vec<Signature>,
+	pub signatures: Vec<LocalizedSignature>,
 }
 
 impl UncheckedJustification {
@@ -108,7 +110,7 @@ impl UncheckedJustification {
 	pub fn check<F>(self, threshold: usize, mut check_message: F)
 		-> Result<Justification, Self>
 		where
-			F: FnMut(u32, &Digest, &Signature) -> Option<AuthorityId>,
+			F: FnMut(u32, &Digest, &LocalizedSignature) -> Option<AuthorityId>,
 	{
 		let checks_out = {
 			let mut checks_out = || {
@@ -185,20 +187,20 @@ struct VoteCounts {
 struct Proposal {
 	proposal: Candidate,
 	digest: Digest,
-	digest_signature: Signature,
+	digest_signature: LocalizedSignature,
 }
 
 /// Misbehavior which can occur.
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum Misbehavior {
 	/// Proposed out-of-turn.
-	ProposeOutOfTurn(u32, Digest, Signature),
+	ProposeOutOfTurn(u32, Digest, LocalizedSignature),
 	/// Issued two conflicting proposals.
-	DoublePropose(u32, (Digest, Signature), (Digest, Signature)),
+	DoublePropose(u32, (Digest, LocalizedSignature), (Digest, LocalizedSignature)),
 	/// Issued two conflicting prepare messages.
-	DoublePrepare(u32, (Digest, Signature), (Digest, Signature)),
+	DoublePrepare(u32, (Digest, LocalizedSignature), (Digest, LocalizedSignature)),
 	/// Issued two conflicting commit messages.
-	DoubleCommit(u32, (Digest, Signature), (Digest, Signature)),
+	DoubleCommit(u32, (Digest, LocalizedSignature), (Digest, LocalizedSignature)),
 }
 
 
@@ -217,8 +219,8 @@ pub struct Accumulator {
 	pub round_proposer: AuthorityId,
 
 	proposal: Option<Proposal>,
-	prepares: HashMap<AuthorityId, (Digest, Signature)>,
-	commits: HashMap<AuthorityId, (Digest, Signature)>,
+	prepares: HashMap<AuthorityId, (Digest, LocalizedSignature)>,
+	commits: HashMap<AuthorityId, (Digest, LocalizedSignature)>,
 	vote_counts: HashMap<Digest, VoteCounts>,
 	advance_round: HashSet<AuthorityId>,
 	state: State,
@@ -365,7 +367,7 @@ impl Accumulator {
 		&mut self,
 		digest: Digest,
 		sender: AuthorityId,
-		signature: Signature,
+		signature: LocalizedSignature,
 	) -> Result<(), Misbehavior> {
 		// ignore any subsequent prepares by the same sender.
 		let threshold_prepared = match self.prepares.entry(sender.clone()) {
@@ -422,7 +424,7 @@ impl Accumulator {
 		&mut self,
 		digest: Digest,
 		sender: AuthorityId,
-		signature: Signature,
+		signature: LocalizedSignature,
 	) -> Result<(), Misbehavior> {
 		// ignore any subsequent commits by the same sender.
 		let threshold_committed = match self.commits.entry(sender.clone()) {
@@ -547,9 +549,9 @@ pub struct LocalizedProposal {
 	/// The sender of the proposal
 	pub sender: AuthorityId,
 	/// The signature on the message (propose, round number, digest)
-	pub digest_signature: Signature,
+	pub digest_signature: LocalizedSignature,
 	/// The signature on the message (propose, round number, proposal)
-	pub full_signature: Signature,
+	pub full_signature: LocalizedSignature,
 }
 
 /// A localized vote message, including the sender.
@@ -560,7 +562,7 @@ pub struct LocalizedVote {
 	/// The sender of the message
 	pub sender: AuthorityId,
 	/// The signature of the message.
-	pub signature: Signature,
+	pub signature: LocalizedSignature,
 }
 
 /// A localized message.
@@ -650,8 +652,8 @@ enum LocalState {
 
 /// Instance of Rhd engine context
 pub struct Context {
-	key: Pair,
-	parent_hash: Option<Hash>,
+	key: SrPair,
+	parent_hash: Hash,
     authorities: Vec<AuthorityId>,
     rhd_worker: Arc<&mut RhdWorker>,
 }
@@ -678,7 +680,7 @@ impl Context {
 	/// Get the proposer for a given round of consensus.
 	fn round_proposer(&self, round: u32) -> AuthorityId {
         let len = self.authorities.len();
-		let offset = round % len;
+		let offset = round % (len as u32);
 		let proposer = self.authorities[offset as usize].clone();
 		trace!(target: "rhd", "proposer for round {} is {}", round, proposer);
 
@@ -700,39 +702,45 @@ impl Context {
 	}
 
 	/// Get the best proposal.
-	fn proposal(&self) -> impl Future<Output=Candidate> {
+	fn proposal(&self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin + '_> {
+	//fn proposal<T>(&self) -> Box<T> where
+    //    T: Future<Output=Candidate> + std::marker::Unpin {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
         self.rhd_worker.ap_tx.unbounded_send(ask_proposal_msg);
         self.rhd_worker.proposing = true;
 
-        poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
+        Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
             match Stream::poll_next(Pin::new(&mut self.rhd_worker.gp_rx), cx) {
-                Poll::Ready(Some(proposal)) => {
-                    Poll::Ready(proposal)
+                Poll::Ready(Some(msg)) => {
+                    match msg {
+                        BftmlChannelMsg::GiveProposal(proposal) => {
+                            Poll::Ready(proposal)
+                        }
+                        _ => Poll::Pending
+                    }
                 }
                 _ => Poll::Pending
             }
-        })
+        }))
     }
 	/// Whether the proposal is valid.
-	fn proposal_valid(&self, proposal: Candidate) -> impl Future<Output=bool> {
+	fn proposal_valid(&self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin + '_> {
         // now, we think it's valid and be ready 
-        poll_fn(move |_cx: &mut FutureContext| -> Poll<bool> {
+        Box::new(poll_fn(move |_cx: &mut FutureContext| -> Poll<bool> {
             Poll::Ready(true)
-        })
+        }))
     }
 
 	/// Create a round timeout. The context will determine the correct timeout
 	/// length, and create a future that will resolve when the timeout is
 	/// concluded.
-	fn begin_round_timeout(&self, round: u32) -> impl Future<Output=()> {
+	fn begin_round_timeout(&self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin + '_> {
         // We give timeout 10 seconds for test
         let timeout = Duration::new(10, 0);
-        let fut = Delay::new(Instant::now() + timeout);
+        let fut = Delay::new(timeout);
 
-        //Box::new(fut)
-        fut
+        Box::new(fut)
     }
 
 }
@@ -763,9 +771,9 @@ struct Strategy {
 	misbehavior: HashMap<AuthorityId, Misbehavior>,
 	earliest_lock_round: u32,
 
-	fetching_proposal: Option<impl Future<Output=Candidate>>,
-	evaluating_proposal: Option<impl Future<Output=bool>>,
-	round_timeout: Option<future::Fuse<impl Future<Output=()>>>,
+	fetching_proposal: Option<Box<dyn Future<Output=Candidate> + std::marker::Unpin>>,
+	evaluating_proposal: Option<Box<dyn Future<Output=bool> + std::marker::Unpin>>,
+	round_timeout: Option<future::Fuse<Box<dyn Future<Output=()> + std::marker::Unpin>>>,
 }
 
 impl Strategy {
@@ -895,10 +903,10 @@ impl Strategy {
 	)
 		-> Poll<Committed>
 	{
-		self.propose(cx, context, sending)?;
-		self.prepare(cx, context, sending)?;
+		self.propose(cx, context, sending);
+		self.prepare(cx, context, sending);
 		self.commit(cx, context, sending);
-		self.vote_advance(cx, context, sending)?;
+		self.vote_advance(cx, context, sending);
 
 		let advance = match self.current_accumulator.state() {
 			&State::Advanced(ref p_just) => {
@@ -976,10 +984,13 @@ impl Strategy {
 					let _ = self.fetching_proposal
 						.get_or_insert_with(|| context.proposal());
                     
-                    match Future::poll(Pin::new(&mut self.fetching_proposal), cx) {
+                    let fetching_proposal = self.fetching_proposal.take().unwrap();
+                    let res = match Future::poll(Pin::new(&mut fetching_proposal), cx) {
 						Poll::Ready(p) => Some(p),
 						Poll::Pending => None,
                     }
+                    self.fetching_proposal = Some(fetching_proposal);
+                    res
 				}
 			};
 
@@ -1033,9 +1044,10 @@ impl Strategy {
 				&mut Some(ref locked) if locked.digest() != &digest => {}
 				locked => {
 					let _ = self.evaluating_proposal
-						.get_or_insert_with(|| context.proposal_valid(candidate));
+						.get_or_insert_with(|| context.proposal_valid(candidate.clone()));
 
-                    match Future::poll(Pin::new(&mut self.evaluating_proposal), cx) {
+                    let evaluating_proposal = self.evaluating_proposal.take().unwrap();
+                    match Future::poll(Pin::new(&mut evaluating_proposal), cx) {
                         Poll::Ready(valid) => {
                             self.evaluating_proposal = None;
                             self.local_state = LocalState::Prepared(valid);
@@ -1056,6 +1068,7 @@ impl Strategy {
                         },
                         _ => {}
                     }
+                    self.evaluating_proposal = Some(evaluating_proposal);
 				}
 			}
 		}
@@ -1138,12 +1151,14 @@ impl Strategy {
 		let _ = self.round_timeout
 			.get_or_insert_with(|| context.begin_round_timeout(round_number).fuse());
 
-        match Future::poll(Pin::new(&mut self.round_timeout), cx) {
-            Poll::Ready() => {
+        let round_timeout = self.round_timeout.take().unwrap();
+        match Future::poll(Pin::new(&mut round_timeout), cx) {
+            Poll::Ready(()) => {
                 attempt_advance = true;
             },
             _ => {}
         }
+        self.round_timeout = Some(round_timeout);
 
 		if attempt_advance {
 			let message = Vote::AdvanceRound(
@@ -1250,7 +1265,7 @@ impl Future for Agreement {
 		while driving {
             let ag = self.get_mut();
             match Stream::poll_next(Pin::new(&mut ag.input), cx) {
-                Poll::ready(Some(msg)) => {
+                Poll::Ready(Some(msg)) => {
                     // here, msg comes from te_rx/input, which was decode at caller, and originally
                     // comes from tc_rx, 
                     match msg {
@@ -1328,7 +1343,7 @@ enum Action {
 
 /// Sign a BFT message with the given key.
 pub fn sign_message(
-	key: &Pair,
+	key: &SrPair,
 	parent_hash: Hash,
 	message: Message,
 ) -> LocalizedMessage {
