@@ -50,7 +50,7 @@ pub struct RhdWorker {
     ts_tx: UnboundedSender<BftmlChannelMsg>,
     cb_tx: UnboundedSender<BftmlChannelMsg>,
     ap_tx: UnboundedSender<BftmlChannelMsg>,
-    gp_rx: UnboundedReceiver<BftmlChannelMsg>,
+    gp_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
 
     agreement_poller: Option<Agreement>,
 
@@ -166,7 +166,7 @@ impl RhdWorker {
             ts_tx,
             cb_tx,
             ap_tx,
-            gp_rx,
+            gp_rx: Some(gp_rx),
 
             agreement_poller: None,
             proposing: false,
@@ -174,15 +174,13 @@ impl RhdWorker {
     }
 
     fn create_agreement_poller(&mut self) {
-        //[XXX]: could allow clone?
-        let arc_rhd_worker = Arc::new(self).clone();
-
         // TODO: where authorities come from?
         let rhd_context = RhdContext {
             key: self.key,
             parent_hash: self.parent_hash,
             authorities: self.authorities.clone(),
-            rhd_worker: arc_rhd_worker.clone(),
+            ap_tx: self.ap_tx.clone(),
+            gp_rx: self.gp_rx.take(),
         };
 
         let (te_tx, te_rx) = mpsc::unbounded::<Communication>();

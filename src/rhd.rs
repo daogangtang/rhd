@@ -655,7 +655,8 @@ pub struct Context {
 	key: SrPair,
 	parent_hash: Hash,
     authorities: Vec<AuthorityId>,
-    rhd_worker: Arc<&mut RhdWorker>,
+    ap_tx: UnboundedSender<BftmlChannelMsg>,
+    gp_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
 }
 
 impl Context {
@@ -703,15 +704,15 @@ impl Context {
 
 	/// Get the best proposal.
 	fn proposal(&self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin + '_> {
-	//fn proposal<T>(&self) -> Box<T> where
-    //    T: Future<Output=Candidate> + std::marker::Unpin {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
-        self.rhd_worker.ap_tx.unbounded_send(ask_proposal_msg);
-        self.rhd_worker.proposing = true;
+        self.ap_tx.unbounded_send(ask_proposal_msg);
+        //self.rhd_worker.proposing = true;
 
+        let gp_rx = self.gp_rx.take().unwrap();
+        // TODO: if move gp_rx to future, need to move it back when the future resolved
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
-            match Stream::poll_next(Pin::new(&mut self.rhd_worker.gp_rx), cx) {
+            match Stream::poll_next(Pin::new(&mut gp_rx), cx) {
                 Poll::Ready(Some(msg)) => {
                     match msg {
                         BftmlChannelMsg::GiveProposal(proposal) => {
@@ -988,7 +989,7 @@ impl Strategy {
                     let res = match Future::poll(Pin::new(&mut fetching_proposal), cx) {
 						Poll::Ready(p) => Some(p),
 						Poll::Pending => None,
-                    }
+                    };
                     self.fetching_proposal = Some(fetching_proposal);
                     res
 				}
