@@ -1,0 +1,32 @@
+[package]
+name = "rhd"
+version = "0.1.0"
+authors = ["Mike Tang <daogangtang@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4.8"
+futures = "0.3.4"
+futures-timer = "3.0"
+codec = { package = "parity-scale-codec", version = "1.3.1" }
+
+sp-inherents = { version = "2.0.0-rc6", path = "../substrate/primitives/inherents" }
+sp-core = { version = "2.0.0-rc6", path = "../substrate/primitives/core" }
+sp-blockchain = { version = "2.0.0-rc6", path = "../substrate/primitives/blockchain" }
+sp-io = { version = "2.0.0-rc6", path = "../substrate/primitives/io" }
+sp-version = { version = "2.0.0-rc6", path = "../substrate/primitives/version" }
+sp-api = { version = "2.0.0-rc6", path = "../substrate/primitives/api" }
+sp-runtime = { version = "2.0.0-rc6", path = "../substrate/primitives/runtime" }
+sp-timestamp = { version = "2.0.0-rc6", path = "../substrate/primitives/timestamp" }
+sp-application-crypto = { version = "2.0.0-rc6", path = "../substrate/primitives/application-crypto" }
+sp-block-builder = { version = "2.0.0-rc6", path = "../substrate/primitives/block-builder" }
+sp-consensus = { version = "0.8.0-rc6", path = "../substrate/primitives/consensus/common" }
+sc-network = { version = "0.8.0-rc6", path = "../substrate/client/network" }
+sc-network-gossip = { version = "0.8.0-rc6", path = "../substrate/client/network-gossip" }
+sc-keystore = { version = "2.0.0-rc6", path = "../substrate/client/keystore" }
+sc-client-api = { version = "2.0.0-rc6", path = "../substrate/client/api" }
+sc-block-builder = { version = "0.8.0-rc6", path = "../substrate/client/block-builder" }
+sc-consensus-bftml = { version = "0.1.0", path = "../substrate/client/consensus/bftml" }
+
