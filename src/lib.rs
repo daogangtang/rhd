@@ -44,13 +44,13 @@ pub struct RhdWorker {
 
     te_tx: Option<UnboundedSender<Communication>>,     // to engine tx, used in this caller layer
     fe_rx: Option<UnboundedReceiver<Communication>>,   // from engine rx, used in this caller layer
-//    cm_rx: Option<UnboundedReceiver<Committed>>,
 
     tc_rx: UnboundedReceiver<BftmlChannelMsg>,
     ts_tx: UnboundedSender<BftmlChannelMsg>,
     cb_tx: UnboundedSender<BftmlChannelMsg>,
     ap_tx: UnboundedSender<BftmlChannelMsg>,
-    gp_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
+    gp_rx: UnboundedReceiver<BftmlChannelMsg>,
+    gpte_tx: Option<UnboundedSender<BftmlChannelMsg>>,
 
     agreement_poller: Option<Agreement>,
 
@@ -108,6 +108,25 @@ impl Future for RhdWorker {
             worker.fe_rx = Some(fe_rx);
         }
 
+        // NOTE: try to solve the ownership of gp_rx 
+        match Stream::poll_next(Pin::new(&mut worker.gp_rx), cx) {
+            Poll::Ready(Some(msg)) => {
+                // msg reform
+                match msg {
+                    BftmlChannelMsg::GiveProposal(proposal) => {
+                        if worker.gpte_tx.is_some() {
+                            // forward to inner
+                            let _ = worker.gpte_tx.as_ref().map(|c|c.unbounded_send(BftmlChannelMsg::GiveProposal(proposal)));
+                        }
+                    }
+                    _ => {}
+                }
+
+            }
+            _ => {}
+        }
+
+
         if worker.agreement_poller.is_none() {
             worker.create_agreement_poller();
         }
@@ -128,8 +147,10 @@ impl Future for RhdWorker {
                     // set back
                     worker.te_tx = None;
                     worker.fe_rx = None;
+                    worker.gpte_tx = None;
+
                     //worker.agreement_poller = None;
-                    // continue next agreement/consensus
+                    // Repeated: continue next agreement/consensus
                     worker.create_agreement_poller();
                 }
                 _ => {
@@ -138,6 +159,8 @@ impl Future for RhdWorker {
                 }
             }
         }
+
+
 
 
         Poll::Pending
@@ -166,7 +189,8 @@ impl RhdWorker {
             ts_tx,
             cb_tx,
             ap_tx,
-            gp_rx: Some(gp_rx),
+            gp_rx,
+            gpte_tx: None,
 
             agreement_poller: None,
             proposing: false,
@@ -174,17 +198,21 @@ impl RhdWorker {
     }
 
     fn create_agreement_poller(&mut self) {
+        let (te_tx, te_rx) = mpsc::unbounded::<Communication>();
+        let (fe_tx, fe_rx) = mpsc::unbounded::<Communication>();
+        let (gpte_tx, gpte_rx) = mpsc::unbounded::<BftmlChannelMsg>();
+
+        // To resolve the ownership problem of which if we use gp_tx/rx directly
+        self.gpte_tx = Some(gpte_tx);
+
         // TODO: where authorities come from?
         let rhd_context = RhdContext {
             key: self.key,
             parent_hash: self.parent_hash,
             authorities: self.authorities.clone(),
             ap_tx: self.ap_tx.clone(),
-            gp_rx: self.gp_rx.take(),
+            gpte_rx: Some(gpte_rx),
         };
-
-        let (te_tx, te_rx) = mpsc::unbounded::<Communication>();
-        let (fe_tx, fe_rx) = mpsc::unbounded::<Communication>();
 
         let n = self.authorities.len();
         let max_faulty = n / 3;

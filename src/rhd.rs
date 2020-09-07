@@ -656,7 +656,7 @@ pub struct Context {
 	parent_hash: Hash,
     authorities: Vec<AuthorityId>,
     ap_tx: UnboundedSender<BftmlChannelMsg>,
-    gp_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
+    gpte_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
 }
 
 impl Context {
@@ -709,10 +709,10 @@ impl Context {
         self.ap_tx.unbounded_send(ask_proposal_msg);
         //self.rhd_worker.proposing = true;
 
-        let gp_rx = self.gp_rx.take().unwrap();
+        let gpte_rx = self.gpte_rx.take().unwrap();
         // TODO: if move gp_rx to future, need to move it back when the future resolved
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
-            match Stream::poll_next(Pin::new(&mut gp_rx), cx) {
+            match Stream::poll_next(Pin::new(&mut gpte_rx), cx) {
                 Poll::Ready(Some(msg)) => {
                     match msg {
                         BftmlChannelMsg::GiveProposal(proposal) => {
