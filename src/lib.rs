@@ -69,7 +69,7 @@ impl Future for RhdWorker {
                 // msg reform
                 match msg {
                     BftmlChannelMsg::GossipMsgIncoming(avec) => {
-                        if self.te_tx.is_some() {
+                        if worker.te_tx.is_some() {
                             // [TODO]: decode vec<u8> to type Communication<B>, does this work?
                             //let msg: Communication<B> = avec.decode();
                             let msg: Communication = Decode::decode(&mut &avec[..]).expect("GossipMsgIncoming serialized msg is corrupted.");
@@ -91,7 +91,7 @@ impl Future for RhdWorker {
         // receive rhd engine protocol msg, forward it to bftml
         if worker.fe_rx.is_some() {
             // we think taking action always success
-            let fe_rx = worker.fe_rx.take().unwrap();
+            let mut fe_rx = worker.fe_rx.take().unwrap();
             match Stream::poll_next(Pin::new(&mut fe_rx), cx) {
                 Poll::Ready(Some(msg)) => {
                     // msg reform
@@ -133,7 +133,7 @@ impl Future for RhdWorker {
         
         if worker.agreement_poller.is_some() {
             // asure unwrap always works
-            let agreement_poller = worker.agreement_poller.take().unwrap();
+            let mut agreement_poller = worker.agreement_poller.take().unwrap();
             match Future::poll(Pin::new(&mut agreement_poller), cx) {
                 Poll::Ready(Some(commit_msg)) => {
                     // the result of poll of agreement is Committed, deal with it
@@ -207,8 +207,8 @@ impl RhdWorker {
 
         // TODO: where authorities come from?
         let rhd_context = RhdContext {
-            key: self.key,
-            parent_hash: self.parent_hash,
+            key: self.key.clone(),
+            parent_hash: self.parent_hash.clone(),
             authorities: self.authorities.clone(),
             ap_tx: self.ap_tx.clone(),
             gpte_rx: Some(gpte_rx),

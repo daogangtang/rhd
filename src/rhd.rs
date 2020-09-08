@@ -652,11 +652,11 @@ enum LocalState {
 
 /// Instance of Rhd engine context
 pub struct Context {
-	key: SrPair,
-	parent_hash: Hash,
-    authorities: Vec<AuthorityId>,
-    ap_tx: UnboundedSender<BftmlChannelMsg>,
-    gpte_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
+	pub key: SrPair,
+	pub parent_hash: Hash,
+    pub authorities: Vec<AuthorityId>,
+    pub ap_tx: UnboundedSender<BftmlChannelMsg>,
+    pub gpte_rx: Option<UnboundedReceiver<BftmlChannelMsg>>,
 }
 
 impl Context {
@@ -675,7 +675,7 @@ impl Context {
 	/// In the case of a proposal message, it should sign on the hash and
 	/// the bytes of the proposal.
 	fn sign_local(&self, message: Message) -> LocalizedMessage {
-		sign_message(&*self.key, self.parent_hash.clone(), message)
+		sign_message(&self.key, self.parent_hash.clone(), message)
     }
 
 	/// Get the proposer for a given round of consensus.
@@ -703,13 +703,13 @@ impl Context {
 	}
 
 	/// Get the best proposal.
-	fn proposal(&self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin + '_> {
+	fn proposal(&mut self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin> {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
         self.ap_tx.unbounded_send(ask_proposal_msg);
         //self.rhd_worker.proposing = true;
 
-        let gpte_rx = self.gpte_rx.take().unwrap();
+        let mut gpte_rx = self.gpte_rx.take().unwrap();
         // TODO: if move gp_rx to future, need to move it back when the future resolved
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
             match Stream::poll_next(Pin::new(&mut gpte_rx), cx) {
@@ -726,7 +726,7 @@ impl Context {
         }))
     }
 	/// Whether the proposal is valid.
-	fn proposal_valid(&self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin + '_> {
+	fn proposal_valid(&mut self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin> {
         // now, we think it's valid and be ready 
         Box::new(poll_fn(move |_cx: &mut FutureContext| -> Poll<bool> {
             Poll::Ready(true)
@@ -736,7 +736,7 @@ impl Context {
 	/// Create a round timeout. The context will determine the correct timeout
 	/// length, and create a future that will resolve when the timeout is
 	/// concluded.
-	fn begin_round_timeout(&self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin + '_> {
+	fn begin_round_timeout(&mut self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin> {
         // We give timeout 10 seconds for test
         let timeout = Duration::new(10, 0);
         let fut = Delay::new(timeout);
@@ -869,7 +869,7 @@ impl Strategy {
 	fn poll(
 		&mut self,
         cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	)
 		-> Poll<Committed>
@@ -899,7 +899,7 @@ impl Strategy {
 	fn poll_once(
 		&mut self,
         cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	)
 		-> Poll<Committed>
@@ -955,7 +955,7 @@ impl Strategy {
 	fn propose(
 		&mut self,
         cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	)
 		-> Result<(), ()>
@@ -985,7 +985,7 @@ impl Strategy {
 					let _ = self.fetching_proposal
 						.get_or_insert_with(|| context.proposal());
                     
-                    let fetching_proposal = self.fetching_proposal.take().unwrap();
+                    let mut fetching_proposal = self.fetching_proposal.take().unwrap();
                     let res = match Future::poll(Pin::new(&mut fetching_proposal), cx) {
 						Poll::Ready(p) => Some(p),
 						Poll::Pending => None,
@@ -1022,7 +1022,7 @@ impl Strategy {
 	fn prepare(
 		&mut self,
         cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	)
 		-> Result<(), ()>
@@ -1047,7 +1047,7 @@ impl Strategy {
 					let _ = self.evaluating_proposal
 						.get_or_insert_with(|| context.proposal_valid(candidate.clone()));
 
-                    let evaluating_proposal = self.evaluating_proposal.take().unwrap();
+                    let mut evaluating_proposal = self.evaluating_proposal.take().unwrap();
                     match Future::poll(Pin::new(&mut evaluating_proposal), cx) {
                         Poll::Ready(valid) => {
                             self.evaluating_proposal = None;
@@ -1089,7 +1089,7 @@ impl Strategy {
 	fn commit(
 		&mut self,
         _cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	) {
 		// commit only if we haven't voted to advance or committed already
@@ -1130,7 +1130,7 @@ impl Strategy {
 	fn vote_advance(
 		&mut self,
         cx: &mut FutureContext,
-		context: &Context,
+		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	)
 		-> Result<(), ()>
@@ -1152,7 +1152,7 @@ impl Strategy {
 		let _ = self.round_timeout
 			.get_or_insert_with(|| context.begin_round_timeout(round_number).fuse());
 
-        let round_timeout = self.round_timeout.take().unwrap();
+        let mut round_timeout = self.round_timeout.take().unwrap();
         match Future::poll(Pin::new(&mut round_timeout), cx) {
             Poll::Ready(()) => {
                 attempt_advance = true;
@@ -1262,17 +1262,17 @@ impl Future for Agreement {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut FutureContext) -> Poll<Self::Output> {
 		// drive state machine as long as there are new messages.
+        let ag = self.get_mut();
 		let mut driving = true;
 		while driving {
-            let ag = self.get_mut();
             match Stream::poll_next(Pin::new(&mut ag.input), cx) {
                 Poll::Ready(Some(msg)) => {
                     // here, msg comes from te_rx/input, which was decode at caller, and originally
                     // comes from tc_rx, 
                     match msg {
-                        Communication::Consensus(message) => self.strategy.import_message(&self.context, message),
+                        Communication::Consensus(message) => ag.strategy.import_message(&ag.context, message),
                         Communication::Auxiliary(lock_proof)
-                            => self.strategy.import_lock_proof(&self.context, lock_proof),
+                            => ag.strategy.import_lock_proof(&ag.context, lock_proof),
                     }
 
                     driving = true;
@@ -1281,8 +1281,8 @@ impl Future for Agreement {
             }
 
 			// drive state machine after handling new input.
-			if let Poll::Ready(just) = self.strategy.poll(cx, &self.context, &mut self.output) {
-				self.concluded = Some(just.clone());
+			if let Poll::Ready(just) = ag.strategy.poll(cx, &mut ag.context, &mut ag.output) {
+				ag.concluded = Some(just.clone());
                 // [XXX]: return recursive polling?
 				// return self.poll(cx);
                 return Poll::Ready(Some(just));
