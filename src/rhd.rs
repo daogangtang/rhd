@@ -703,7 +703,7 @@ impl Context {
 	}
 
 	/// Get the best proposal.
-	fn proposal(&mut self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin> {
+	fn proposal(&mut self) -> Box<dyn Future<Output=Candidate> + std::marker::Unpin + Send> {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
         self.ap_tx.unbounded_send(ask_proposal_msg);
@@ -726,7 +726,7 @@ impl Context {
         }))
     }
 	/// Whether the proposal is valid.
-	fn proposal_valid(&mut self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin> {
+	fn proposal_valid(&mut self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin + Send> {
         // now, we think it's valid and be ready 
         Box::new(poll_fn(move |_cx: &mut FutureContext| -> Poll<bool> {
             Poll::Ready(true)
@@ -736,7 +736,7 @@ impl Context {
 	/// Create a round timeout. The context will determine the correct timeout
 	/// length, and create a future that will resolve when the timeout is
 	/// concluded.
-	fn begin_round_timeout(&mut self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin> {
+	fn begin_round_timeout(&mut self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin + Send> {
         // We give timeout 10 seconds for test
         let timeout = Duration::new(10, 0);
         let fut = Delay::new(timeout);
@@ -772,9 +772,9 @@ struct Strategy {
 	misbehavior: HashMap<AuthorityId, Misbehavior>,
 	earliest_lock_round: u32,
 
-	fetching_proposal: Option<Box<dyn Future<Output=Candidate> + std::marker::Unpin>>,
-	evaluating_proposal: Option<Box<dyn Future<Output=bool> + std::marker::Unpin>>,
-	round_timeout: Option<future::Fuse<Box<dyn Future<Output=()> + std::marker::Unpin>>>,
+	fetching_proposal: Option<Box<dyn Future<Output=Candidate> + std::marker::Unpin + Send>>,
+	evaluating_proposal: Option<Box<dyn Future<Output=bool> + std::marker::Unpin + Send>>,
+	round_timeout: Option<future::Fuse<Box<dyn Future<Output=()> + std::marker::Unpin + Send>>>,
 }
 
 impl Strategy {

@@ -17,7 +17,7 @@ use codec::{Codec, Decode, Encode};
 
 // dependencies on substrate
 use sp_core::{H256, Pair as TTPair};
-use sp_core::sr25519::{Pair, Public as AuthorityId, Signature, LocalizedSignature};
+pub use sp_core::sr25519::{Pair, Public as AuthorityId, Signature, LocalizedSignature};
 use sp_runtime::traits::{Block as BlockT};
 use sp_consensus::{
     Environment, Proposer, SyncOracle, SelectChain, CanAuthorWith,
@@ -34,6 +34,7 @@ type Hash = H256;
 
 mod rhd;
 use rhd::{Agreement, Committed, Communication, Misbehavior, Context as RhdContext};
+
 
 /// A future that resolves either when canceled (witnessing a block from the network at same height)
 /// or when agreement completes.
