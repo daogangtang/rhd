@@ -17,7 +17,7 @@ use codec::{Codec, Decode, Encode};
 
 // dependencies on substrate
 use sp_core::{H256, Pair as TTPair};
-pub use sp_core::sr25519::{Pair, Public as AuthorityId, Signature, LocalizedSignature};
+pub use sp_core::sr25519::{self, Pair, Public as AuthorityId, Signature, LocalizedSignature};
 use sp_runtime::traits::{Block as BlockT};
 use sp_consensus::{
     Environment, Proposer, SyncOracle, SelectChain, CanAuthorWith,
@@ -29,6 +29,7 @@ use sp_inherents::{InherentDataProviders};
 use sc_network::{NetworkService, ExHashT};
 use sc_client_api::{backend::{AuxStore}};
 use sc_consensus_bftml::{BftmlWorker, BftmlChannelMsg, BftProposal, gen};
+use sc_keystore::KeyStorePtr;
 
 type Hash = H256;
 
@@ -39,8 +40,9 @@ use rhd::{Agreement, Committed, Communication, Misbehavior, Context as RhdContex
 /// A future that resolves either when canceled (witnessing a block from the network at same height)
 /// or when agreement completes.
 pub struct RhdWorker {
-    key: Pair,
-    authorities: Vec<AuthorityId>,
+    // key: Pair,
+    // authorities: Vec<AuthorityId>,
+    keystore: KeyStorePtr,
     parent_hash: Hash,
 
     te_tx: Option<UnboundedSender<Communication>>,     // to engine tx, used in this caller layer
@@ -56,6 +58,88 @@ pub struct RhdWorker {
     agreement_poller: Option<Agreement>,
 
     proposing: bool,
+}
+
+impl RhdWorker {
+    pub fn new(
+        // key: Pair,
+        // authorities: Vec<AuthorityId>,
+        keystore: KeyStorePtr,
+        tc_rx: UnboundedReceiver<BftmlChannelMsg>,
+        ts_tx: UnboundedSender<BftmlChannelMsg>,
+        cb_tx: UnboundedSender<BftmlChannelMsg>,
+        ap_tx: UnboundedSender<BftmlChannelMsg>,
+        gp_rx: UnboundedReceiver<BftmlChannelMsg>,) -> RhdWorker {
+
+        RhdWorker {
+            // key,
+            // authorities,
+            keystore,
+            parent_hash: Default::default(),
+
+            te_tx: None,
+            fe_rx: None,
+
+            tc_rx,
+            ts_tx,
+            cb_tx,
+            ap_tx,
+            gp_rx,
+            gpte_tx: None,
+
+            agreement_poller: None,
+            proposing: false,
+        }
+    }
+
+    fn create_agreement_poller(&mut self) {
+        let (te_tx, te_rx) = mpsc::unbounded::<Communication>();
+        let (fe_tx, fe_rx) = mpsc::unbounded::<Communication>();
+        let (gpte_tx, gpte_rx) = mpsc::unbounded::<BftmlChannelMsg>();
+
+        // To resolve the ownership problem of which if we use gp_tx/rx directly
+        self.gpte_tx = Some(gpte_tx);
+
+        // TODO: Modify this to compile to four different nodes, tmp method
+        let pair_key = generate_sr25519_pair("Alice");
+        //let pair_key = generate_sr25519_pair("Bob");
+        //let pair_key = generate_sr25519_pair("Charlie");
+        //let pair_key = generate_sr25519_pair("Dave");
+
+        let authorities = vec![
+            // sr25519::Public::from(Sr25519Keyring::Alice).into(),
+            // sr25519::Public::from(Sr25519Keyring::Bob).into(),
+            // sr25519::Public::from(Sr25519Keyring::Charlie).into(),
+            // sr25519::Public::from(Sr25519Keyring::Dave).into(),
+            generate_sr25519_pair("Alice").public(),
+            generate_sr25519_pair("Bob").public(),
+            generate_sr25519_pair("Charlie").public(),
+            generate_sr25519_pair("Dave").public(),
+        ];
+
+        let rhd_context = RhdContext {
+            key: pair_key,
+            parent_hash: self.parent_hash.clone(),
+            authorities: authorities,
+            ap_tx: self.ap_tx.clone(),
+            gpte_rx: Some(gpte_rx),
+        };
+
+        let n = self.authorities.len();
+        let max_faulty = n / 3;
+        let mut agreement = rhd::agree(
+            rhd_context,
+            n,
+            max_faulty,
+            te_rx, // input
+            fe_tx, // output
+        );
+
+        self.te_tx = Some(te_tx);
+        self.fe_rx = Some(fe_rx);
+        self.agreement_poller = Some(agreement);
+    }
+
 }
 
 // rhd worker main poll
@@ -82,7 +166,7 @@ impl Future for RhdWorker {
                             let _ = worker.te_tx.as_ref().map(|c|c.unbounded_send(msg));
                         }
                     }
-                    _ => {}
+.as_bytes().to_vec();                    _ => {}
                 }
 
             }
@@ -138,19 +222,18 @@ impl Future for RhdWorker {
             match Future::poll(Pin::new(&mut agreement_poller), cx) {
                 Poll::Ready(Some(commit_msg)) => {
                     // the result of poll of agreement is Committed, deal with it
-                    // cm_tx.unbounded_send(commit_msg);
-                    // [TODO]: convert Committed to BftProposal
-                    // here, we couldn't pass back Commited to lower level Bftml, Bftml doesn't
-                    // realize upper structure, and should not realize it.
-                    let bp = BftProposal{};
-                    worker.cb_tx.unbounded_send(BftmlChannelMsg::CommitBlock(bp));
+                    // TODO: err handling
+                    let candidate = commit_msg.candidate.unwrap();
+                    let block_hash = candidate.rhd_hash();
+                    let msg = block_hash.as_bytes().to_vec();
+                    worker.cb_tx.unbounded_send(BftmlChannelMsg::CommitBlock(msg));
 
                     // set back
                     worker.te_tx = None;
                     worker.fe_rx = None;
                     worker.gpte_tx = None;
 
-                    //worker.agreement_poller = None;
+                    // TODO: timer sleep?
                     // Repeated: continue next agreement/consensus
                     worker.create_agreement_poller();
                 }
@@ -168,69 +251,6 @@ impl Future for RhdWorker {
     }
 }
 
-impl RhdWorker {
-    pub fn new(
-        key: Pair,
-        authorities: Vec<AuthorityId>,
-        tc_rx: UnboundedReceiver<BftmlChannelMsg>,
-        ts_tx: UnboundedSender<BftmlChannelMsg>,
-        cb_tx: UnboundedSender<BftmlChannelMsg>,
-        ap_tx: UnboundedSender<BftmlChannelMsg>,
-        gp_rx: UnboundedReceiver<BftmlChannelMsg>,) -> RhdWorker {
-
-        RhdWorker {
-            key,
-            authorities,
-            parent_hash: Default::default(),
-
-            te_tx: None,
-            fe_rx: None,
-
-            tc_rx,
-            ts_tx,
-            cb_tx,
-            ap_tx,
-            gp_rx,
-            gpte_tx: None,
-
-            agreement_poller: None,
-            proposing: false,
-        }
-    }
-
-    fn create_agreement_poller(&mut self) {
-        let (te_tx, te_rx) = mpsc::unbounded::<Communication>();
-        let (fe_tx, fe_rx) = mpsc::unbounded::<Communication>();
-        let (gpte_tx, gpte_rx) = mpsc::unbounded::<BftmlChannelMsg>();
-
-        // To resolve the ownership problem of which if we use gp_tx/rx directly
-        self.gpte_tx = Some(gpte_tx);
-
-        // TODO: where authorities come from?
-        let rhd_context = RhdContext {
-            key: self.key.clone(),
-            parent_hash: self.parent_hash.clone(),
-            authorities: self.authorities.clone(),
-            ap_tx: self.ap_tx.clone(),
-            gpte_rx: Some(gpte_rx),
-        };
-
-        let n = self.authorities.len();
-        let max_faulty = n / 3;
-        let mut agreement = rhd::agree(
-            rhd_context,
-            n,
-            max_faulty,
-            te_rx, // input
-            fe_tx, // output
-        );
-
-        self.te_tx = Some(te_tx);
-        self.fe_rx = Some(fe_rx);
-        self.agreement_poller = Some(agreement);
-    }
-
-}
 
 
 
@@ -247,8 +267,9 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
     select_chain: Option<S>,
     inherent_data_providers: InherentDataProviders,
     can_author_with: CAW,
-    key: Pair,   // could be generated by client?
-    authorities: Vec<AuthorityId>,
+    // key: Pair,   // could be generated by client?
+    // authorities: Vec<AuthorityId>,
+    keystore: KeyStorePtr,
     ) -> Result<(impl Future<Output = ()>, impl Future<Output = ()>), sp_consensus::Error> where
     B: BlockT + Clone + Eq,
 	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi<B> + 'static,
@@ -284,8 +305,9 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
         can_author_with,);
 
     let mut rhd_worker = RhdWorker::new(
-        key,
-        authorities,
+        // key,
+        // authorities,
+        keystore,
         tc_rx,
         ts_tx,
         cb_tx,
@@ -297,3 +319,8 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
     Ok((bftml_worker, rhd_worker))
 }
 
+// helper
+fn generate_sr25519_pair(seed: &str) -> sr25519::Pair {
+    sr25519::Pair::from_string(&format!("//{}", seed), None)
+        .expect("static values are valid; qed")
+}

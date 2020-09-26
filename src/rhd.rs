@@ -42,43 +42,13 @@ type Hash = H256;
 // Digest is hash? or hash vec?
 type Digest = H256;
 
-
-
-/// Abstraction over a block header for a substrate chain.
-#[derive(PartialEq, Eq, Clone, Encode, Decode, Debug)]
-pub struct Header {
-	/// The block number.
-	pub number: u64,
-	/// The parent hash.
-	pub parent_hash: Hash,
-	/// The state trie merkle root
-	pub state_root: Hash,
-	/// The merkle root of the extrinsics.
-	pub extrinsics_root: Hash,
-	// A chain-specific digest of data useful for light clients or referencing auxiliary data.
-	//pub digest: Digest<Hash>,
+trait RhdBlockExt {
+    pub fn rhd_hash(&self) -> Hash;
 }
 
-type Extrinsic = Vec<u8>;
-
-/// Abstraction over a substrate block.
-#[derive(PartialEq, Eq, Clone, Encode, Decode, Debug)]
-pub struct Block {
-	/// The block header.
-	pub header: Header,
-	/// The accompanying extrinsics.
-	pub extrinsics: Vec<Extrinsic>,
-}
-
-// [TODO]: impl .hash() for Block using hash method
-impl Block {
-    pub fn hash(&self) -> Hash {
-        // calc block header's hash
-        // we can hash it by myself method, join these fileds and use BlakeTwo256::hash() to hash
-        // it, and it produce sp_core::H256.
-
-        // tmp return for test
-        BlakeTwo256::hash(&[1,2,3,4,5,6,7,8])
+impl RhdBlockExt for BftProposal {
+    pub fn rhd_hash(&self) -> Hash {
+        BlakeTwo256::hash(&self.calculated_block_hash[..])
     }
 }
 
@@ -668,7 +638,7 @@ impl Context {
 	/// Get the digest of a candidate.
 	fn candidate_digest(&self, candidate: &Candidate) -> Digest {
         // return header's hash
-        candidate.hash()
+        candidate.rhd_hash()
     }
 
 	/// Sign a message using the local authority ID.
@@ -1361,7 +1331,7 @@ pub fn sign_message(
 
 	match message {
 		Message::Propose(r, proposal) => {
-			let header_hash = proposal.hash();
+			let header_hash = proposal.rhd_hash();
 			let action_header = Action::ProposeHeader(r as u32, header_hash.clone());
 			let action_propose = Action::Propose(r as u32, proposal.clone());
 
