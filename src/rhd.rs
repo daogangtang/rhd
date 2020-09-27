@@ -42,18 +42,18 @@ type Hash = H256;
 // Digest is hash? or hash vec?
 type Digest = H256;
 
-trait RhdBlockExt {
-    pub fn rhd_hash(&self) -> Hash;
-}
-
-impl RhdBlockExt for BftProposal {
-    pub fn rhd_hash(&self) -> Hash {
-        BlakeTwo256::hash(&self.calculated_block_hash[..])
-    }
+pub trait RhdBlockExt {
+    fn rhd_hash(&self) -> Hash;
 }
 
 // type Candidate = Block;
 type Candidate = BftProposal;
+
+impl RhdBlockExt for Candidate {
+    fn rhd_hash(&self) -> Hash {
+        BlakeTwo256::hash(&self.calculated_block_hash[..])
+    }
+}
 
 /// Justification for some state at a given round.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -677,10 +677,8 @@ impl Context {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
         self.ap_tx.unbounded_send(ask_proposal_msg);
-        //self.rhd_worker.proposing = true;
 
         let mut gpte_rx = self.gpte_rx.take().unwrap();
-        // TODO: if move gp_rx to future, need to move it back when the future resolved
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
             match Stream::poll_next(Pin::new(&mut gpte_rx), cx) {
                 Poll::Ready(Some(msg)) => {
@@ -695,6 +693,7 @@ impl Context {
             }
         }))
     }
+
 	/// Whether the proposal is valid.
 	fn proposal_valid(&mut self, proposal: Candidate) -> Box<dyn Future<Output=bool> + std::marker::Unpin + Send> {
         // now, we think it's valid and be ready 

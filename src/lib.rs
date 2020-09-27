@@ -27,14 +27,14 @@ use sp_blockchain::{HeaderBackend};
 use sp_api::{ProvideRuntimeApi};
 use sp_inherents::{InherentDataProviders}; 
 use sc_network::{NetworkService, ExHashT};
-use sc_client_api::{backend::{AuxStore}};
-use sc_consensus_bftml::{BftmlWorker, BftmlChannelMsg, BftProposal, gen};
+use sc_client_api::{backend::{AuxStore, Backend}, Finalizer};
+use sc_consensus_bftml::{BftmlWorker, BftmlChannelMsg, BftmlInnerMsg, BftProposal, gen};
 use sc_keystore::KeyStorePtr;
 
 type Hash = H256;
 
 mod rhd;
-use rhd::{Agreement, Committed, Communication, Misbehavior, Context as RhdContext};
+use rhd::{Agreement, Committed, Communication, Misbehavior, Context as RhdContext, RhdBlockExt};
 
 
 /// A future that resolves either when canceled (witnessing a block from the network at same height)
@@ -57,7 +57,7 @@ pub struct RhdWorker {
 
     agreement_poller: Option<Agreement>,
 
-    proposing: bool,
+    //proposing: bool,
 }
 
 impl RhdWorker {
@@ -88,7 +88,7 @@ impl RhdWorker {
             gpte_tx: None,
 
             agreement_poller: None,
-            proposing: false,
+            //proposing: false,
         }
     }
 
@@ -116,6 +116,8 @@ impl RhdWorker {
             generate_sr25519_pair("Charlie").public(),
             generate_sr25519_pair("Dave").public(),
         ];
+        let n = authorities.len();
+        let max_faulty = n / 3;
 
         let rhd_context = RhdContext {
             key: pair_key,
@@ -125,8 +127,6 @@ impl RhdWorker {
             gpte_rx: Some(gpte_rx),
         };
 
-        let n = self.authorities.len();
-        let max_faulty = n / 3;
         let mut agreement = rhd::agree(
             rhd_context,
             n,
@@ -166,7 +166,7 @@ impl Future for RhdWorker {
                             let _ = worker.te_tx.as_ref().map(|c|c.unbounded_send(msg));
                         }
                     }
-.as_bytes().to_vec();                    _ => {}
+                    _ => {}
                 }
 
             }
@@ -211,7 +211,6 @@ impl Future for RhdWorker {
             _ => {}
         }
 
-
         if worker.agreement_poller.is_none() {
             worker.create_agreement_poller();
         }
@@ -244,9 +243,6 @@ impl Future for RhdWorker {
             }
         }
 
-
-
-
         Poll::Pending
     }
 }
@@ -257,12 +253,12 @@ impl Future for RhdWorker {
 // We must use some basic types defined in Substrate, imported and use here
 // We can specify and wrap all these types in bftml, and import them from bftml module
 // to reduce noise on your eye
-pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
+pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H, BD>(
     client: Arc<C>,
     block_import: BoxBlockImport<B, sp_api::TransactionFor<C, B>>,
     proposer_factory: E,
     network: Arc<NetworkService<B, H>>,
-    imported_block_rx: UnboundedReceiver<BftProposal>,
+    imported_block_rx: UnboundedReceiver<BftmlInnerMsg<B>>,
     sync_oracle: SO,  // sync_oracle is also network
     select_chain: Option<S>,
     inherent_data_providers: InherentDataProviders,
@@ -272,7 +268,9 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H>(
     keystore: KeyStorePtr,
     ) -> Result<(impl Future<Output = ()>, impl Future<Output = ()>), sp_consensus::Error> where
     B: BlockT + Clone + Eq,
-	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi<B> + 'static,
+    B::Hash: std::marker::Unpin,
+	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi<B> + Finalizer<B, BD> + 'static,
+    BD: Backend<B> + std::marker::Unpin,
     E: Environment<B> + Send + Sync + std::marker::Unpin,
     E::Proposer: Proposer<B, Transaction = sp_api::TransactionFor<C, B>>,
     E::Error: std::fmt::Debug,
