@@ -272,6 +272,7 @@ impl Accumulator {
 		&mut self,
 		message: LocalizedMessage,
 	) -> Result<(), Misbehavior> {
+        info!("==> Accumulator import_message: self.round_number: {:?}, msg.round_number: {:?}", self.round_number, message.round_number());
 		// message from different round.
 		if message.round_number() != self.round_number {
 			return Ok(());
@@ -294,7 +295,11 @@ impl Accumulator {
 		&mut self,
 		proposal: LocalizedProposal,
 	) -> Result<(), Misbehavior> {
+		info!("==> Accumulator: enter import_proposal: self.state: {:?}", self.state);
+
 		let sender = proposal.sender;
+
+		info!("==> Accumulator: import_proposal: proposal.sender: {:?}, round_proposer: {:?}", sender, self.round_proposer);
 
 		if sender != self.round_proposer {
 			return Err(Misbehavior::ProposeOutOfTurn(
@@ -304,6 +309,7 @@ impl Accumulator {
 			);
 		}
 
+        // if self.proposal is Some, check it, else do nothing
 		match self.proposal {
 			Some(ref p) if &p.digest != &proposal.digest => {
 				return Err(Misbehavior::DoublePropose(
@@ -318,7 +324,7 @@ impl Accumulator {
 			_ => {},
 		}
 
-		debug!(target: "bft", "Importing proposal for round {}", self.round_number);
+		info!("==> Accumulator: import_proposal for round {}", self.round_number);
 
 		self.proposal = Some(Proposal {
 			proposal: proposal.proposal.clone(),
@@ -326,6 +332,9 @@ impl Accumulator {
 			digest_signature: proposal.digest_signature,
 		});
 
+		info!("==> Accumulator: import_proposal: self.state: {:?}", self.state);
+
+        // Proposal has been imported, alter state to next stage now
 		if let State::Begin = self.state {
 			self.state = State::Proposed(proposal.proposal);
 		}
@@ -339,6 +348,9 @@ impl Accumulator {
 		sender: AuthorityId,
 		signature: LocalizedSignature,
 	) -> Result<(), Misbehavior> {
+        
+		info!("==> Accumulator: enter import_prepare: self.state: {:?}", self.state);
+
 		// ignore any subsequent prepares by the same sender.
 		let threshold_prepared = match self.prepares.entry(sender.clone()) {
 			Entry::Vacant(vacant) => {
@@ -346,6 +358,8 @@ impl Accumulator {
 				let count = self.vote_counts.entry(digest.clone()).or_insert_with(Default::default);
 				count.prepared += 1;
 
+		        info!("==> Accumulator: import_prepare: self.threshold: {:?}, count.prepared: {:?}", self.threshold, count.prepared);
+                // only when greater than threshold, return Some
 				if count.prepared >= self.threshold as u64 {
 					Some(digest)
 				} else {
@@ -372,6 +386,7 @@ impl Accumulator {
 			_ => false,
 		};
 
+        // When collected enough prepare votes, go to next state stage: Prepared
 		if let (true, Some(threshold_prepared)) = (valid_transition, threshold_prepared) {
 			let signatures = self.prepares
 				.values()
@@ -379,7 +394,9 @@ impl Accumulator {
 				.map(|&(_, ref s)| s.clone())
 				.collect();
 
-			trace!(target: "bft", "observed threshold-prepare for round {}", self.round_number);
+			info!("==> Accumulator: observed threshold-prepare for round {}", self.round_number);
+
+            // Alter state to Prepared
 			self.state = State::Prepared(Justification(UncheckedJustification {
 				round_number: self.round_number,
 				digest: threshold_prepared,
@@ -396,6 +413,9 @@ impl Accumulator {
 		sender: AuthorityId,
 		signature: LocalizedSignature,
 	) -> Result<(), Misbehavior> {
+
+		info!("==> Accumulator: enter import_commit: self.state: {:?}", self.state);
+        
 		// ignore any subsequent commits by the same sender.
 		let threshold_committed = match self.commits.entry(sender.clone()) {
 			Entry::Vacant(vacant) => {
@@ -423,6 +443,8 @@ impl Accumulator {
 			}
 		};
 
+		info!("==> Accumulator: import_commit: threshold_committed: {:?}", threshold_committed);
+
 		// transition to concluded state always valid.
 		// only weird case is if the prior state was "advanced",
 		// but technically it's the same behavior as if the order of receiving
@@ -434,7 +456,8 @@ impl Accumulator {
 				.map(|&(_, ref s)| s.clone())
 				.collect();
 
-			trace!(target: "bft", "observed threshold-commit for round {}", self.round_number);
+			info!("==> Accumulator: observed threshold-commit for round {}", self.round_number);
+
 			self.state = State::Committed(Justification(UncheckedJustification {
 				round_number: self.round_number,
 				digest: threshold_committed,
@@ -449,10 +472,13 @@ impl Accumulator {
 		&mut self,
 		sender: AuthorityId,
 	) -> Result<(), Misbehavior> {
+
+		info!("==> Accumulator: enter import_advance_round: self.state: {:?}", self.state);
+
 		self.advance_round.insert(sender);
 
 		if self.advance_round.len() < self.threshold { return Ok(()) }
-		trace!(target: "bft", "Witnessed threshold advance-round messages for round {}", self.round_number);
+		info!("==> Accumulator: Witnessed threshold advance-round messages for round {}", self.round_number);
 
 		// allow transition to new round only if we haven't produced a justification
 		// yet.
@@ -653,7 +679,7 @@ impl Context {
         let len = self.authorities.len();
 		let offset = round % (len as u32);
 		let proposer = self.authorities[offset as usize].clone();
-		trace!(target: "rhd", "proposer for round {} is {}", round, proposer);
+		info!("===>>> Rhd Context: proposer for round {} is {}", round, proposer);
 
 		proposer
     }
@@ -677,11 +703,13 @@ impl Context {
         // 0 as tmp parameter, for I don't know which one is valid now
         let ask_proposal_msg = BftmlChannelMsg::AskProposal(0);
         self.ap_tx.unbounded_send(ask_proposal_msg);
+        info!("===>>> Rhd Context: in proposal: ap_tx.unbounded_send()");
 
         let mut gpte_rx = self.gpte_rx.take().unwrap();
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
             match Stream::poll_next(Pin::new(&mut gpte_rx), cx) {
                 Poll::Ready(Some(msg)) => {
+                    info!("===>>> Rhd Context: in proposal: poll ready: gpte_rx: msg: {:?}", msg);
                     match msg {
                         BftmlChannelMsg::GiveProposal(proposal) => {
                             Poll::Ready(proposal)
@@ -707,7 +735,7 @@ impl Context {
 	/// concluded.
 	fn begin_round_timeout(&mut self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin + Send> {
         // We give timeout 10 seconds for test
-        let timeout = Duration::new(10, 0);
+        let timeout = Duration::new(100, 0);
         let fut = Delay::new(timeout);
 
         Box::new(fut)
@@ -787,6 +815,7 @@ impl Strategy {
 
 		let sender = msg.sender().clone();
 		let current_round = self.current_round();
+        info!("==> Strategy import_message: current_round: {:?}, msg.round_number: {:?}", current_round, round_number);
 		let misbehavior = if round_number == current_round {
 			self.current_accumulator.import_message(msg)
 		} else if round_number > current_round {
@@ -847,7 +876,8 @@ impl Strategy {
 
 		// poll until either completion or state doesn't change.
 		loop {
-			trace!(target: "bft", "Polling BFT logic. State={:?}", last_watermark);
+			//trace!(target: "bft", "Polling BFT logic. State={:?}", last_watermark);
+	        info!("===>>> Rhd Polling BFT logic. State={:?}", last_watermark);
 			match self.poll_once(cx, context, sending) {
 				Poll::Ready(x) => return Poll::Ready(x),
 				Poll::Pending=> {
@@ -873,6 +903,7 @@ impl Strategy {
 	)
 		-> Poll<Committed>
 	{
+	    info!("===>>> Rhd Strategy: enter poll_once");
 		self.propose(cx, context, sending);
 		self.prepare(cx, context, sending);
 		self.commit(cx, context, sending);
@@ -880,6 +911,7 @@ impl Strategy {
 
 		let advance = match self.current_accumulator.state() {
 			&State::Advanced(ref p_just) => {
+	            info!("===>>> Rhd Strategy in poll_once: State::Advanced");
 				// lock to any witnessed prepare justification.
 				if let Some(p_just) = p_just.as_ref() {
 					self.locked = Some(Locked { justification: p_just.clone() });
@@ -889,6 +921,7 @@ impl Strategy {
 				Some(round_number + 1)
 			}
 			&State::Committed(ref just) => {
+	            info!("===>>> Rhd Strategy in poll_once: State::Committed");
 				// fetch the agreed-upon candidate:
 				//   - we may not have received the proposal in the first place
 				//   - there is no guarantee that the proposal we got was agreed upon
@@ -915,9 +948,11 @@ impl Strategy {
 		};
 
 		if let Some(new_round) = advance {
+	        info!("===>>> Rhd Strategy: advance_to_round: {}", new_round);
 			self.advance_to_round(context, new_round, AdvanceRoundReason::Timeout);
 		}
 
+	    info!("===>>> Rhd Strategy: leave poll_once");
 		Poll::Pending
 	}
 
@@ -929,6 +964,7 @@ impl Strategy {
 	)
 		-> Result<(), ()>
 	{
+	    info!("===>>> Rhd Strategy: enter propose: self.local_state: {:?}", self.local_state);
 		if let LocalState::Start = self.local_state {
 			let mut propose = false;
 			if let &State::Begin = self.current_accumulator.state() {
@@ -937,11 +973,16 @@ impl Strategy {
 				propose = self.local_id == primary;
 			};
 
+	        info!("===>>> Strategy: propose(): flag propose: {}", propose);
+
 			if !propose { return Ok(()) }
 
 			// obtain the proposal to broadcast.
 			let proposal = match self.locked {
 				Some(ref locked) => {
+
+	                info!("===>>> Strategy: propose(): walk locked branch");
+
 					// TODO: it's possible but very unlikely that we don't have the
 					// corresponding proposal for what we are locked to.
 					//
@@ -955,18 +996,25 @@ impl Strategy {
 						.get_or_insert_with(|| context.proposal());
                     
                     let mut fetching_proposal = self.fetching_proposal.take().unwrap();
-                    let res = match Future::poll(Pin::new(&mut fetching_proposal), cx) {
-						Poll::Ready(p) => Some(p),
-						Poll::Pending => None,
-                    };
-                    self.fetching_proposal = Some(fetching_proposal);
-                    res
+	                info!("===>>> Rhd Strategy: go to poll fetching_proposal future");
+                    match Future::poll(Pin::new(&mut fetching_proposal), cx) {
+						Poll::Ready(p) => {
+	                        info!("===>>> Rhd Strategy: poll ready: self.fetching_proposal: proposal: {:?}", p);
+                            Some(p)
+                        },
+						Poll::Pending => {
+                            self.fetching_proposal = Some(fetching_proposal);
+                            None
+                        }
+                    }
 				}
 			};
 
 			if let Some(proposal) = proposal {
+                // No needed this line
 				self.fetching_proposal = None;
 
+	            info!("==> Rhd Strategy: Message::Propose, current_round: {}", self.current_round());
 				let message = Message::Propose(
 					self.current_round(),
 					proposal
@@ -976,14 +1024,18 @@ impl Strategy {
 
 				// broadcast the justification along with the proposal if we are locked.
 				if let Some(ref locked) = self.locked {
+	                info!("===>>> Rhd Strategy: self.locked");
 					sending.unbounded_send(
 						Communication::Auxiliary(locked.justification.clone())
 					);
 				}
 
+                // alter local state to next stage
 				self.local_state = LocalState::Proposed;
 			}
 		}
+
+	    info!("===>>> Rhd Strategy: leave propose");
 
 		Ok(())
 	}
@@ -996,6 +1048,7 @@ impl Strategy {
 	)
 		-> Result<(), ()>
 	{
+	    info!("===>>> Rhd Strategy: enter prepare: local_state: {:?}", self.local_state);
 		// prepare only upon start or having proposed.
 		match self.local_state {
 			LocalState::Start | LocalState::Proposed => {},
@@ -1006,20 +1059,23 @@ impl Strategy {
 
 		// we can't prepare until something was proposed.
 		if let &State::Proposed(ref candidate) = self.current_accumulator.state() {
+	        info!("===>>> Rhd Strategy: State::Proposed: candidate: {:?}", candidate);
 			let digest = context.candidate_digest(candidate);
 
 			// vote to prepare only if we believe the candidate to be valid and
 			// we are not locked on some other candidate.
 			match &mut self.locked {
-				&mut Some(ref locked) if locked.digest() != &digest => {}
+				&mut Some(ref locked) if locked.digest() != &digest => {},
 				locked => {
 					let _ = self.evaluating_proposal
 						.get_or_insert_with(|| context.proposal_valid(candidate.clone()));
+	                info!("===>>> Rhd Strategy: self.evaluating_proposal");
 
                     let mut evaluating_proposal = self.evaluating_proposal.take().unwrap();
                     match Future::poll(Pin::new(&mut evaluating_proposal), cx) {
                         Poll::Ready(valid) => {
-                            self.evaluating_proposal = None;
+	                        info!("===>>> Rhd Strategy: poll ready: self.evaluating_proposal");
+                            //self.evaluating_proposal = None;
                             self.local_state = LocalState::Prepared(valid);
 
                             if valid {
@@ -1036,14 +1092,19 @@ impl Strategy {
                                 }
                             }
                         },
-                        _ => {}
+                        _ => {
+                            // restore
+                            self.evaluating_proposal = Some(evaluating_proposal);
+                        }
                     }
-                    self.evaluating_proposal = Some(evaluating_proposal);
 				}
 			}
 		}
 
 		if let Some(digest) = prepare_for {
+            
+	        info!("==> Rhd Strategy: Vote::Prepared: current_round: {}, digest: {:?}", self.current_round(), digest);
+
 			let message = Vote::Prepare(
 				self.current_round(),
 				digest
@@ -1051,6 +1112,8 @@ impl Strategy {
 
 			self.import_and_send_message(message, context, sending);
 		}
+
+	    info!("===>>> Rhd Strategy: leave prepare.");
 
 		Ok(())
 	}
@@ -1061,6 +1124,7 @@ impl Strategy {
 		context: &mut Context,
 		sending: &mut UnboundedSender<Communication>
 	) {
+	    info!("===>>> Rhd Strategy: enter commit(): local_state: {:?}", self.local_state);
 		// commit only if we haven't voted to advance or committed already
 		match self.local_state {
 			LocalState::Committed | LocalState::VoteAdvance => return,
@@ -1075,8 +1139,10 @@ impl Strategy {
 		};
 
 		if let &State::Prepared(ref p_just) = self.current_accumulator.state() {
+	        info!("===>>> Rhd Strategy: State::Prepared, earliest_lock_round: {}", self.current_accumulator.round_number());
 			// we are now locked to this prepare justification.
 			// refuse to lock if the thing is bad.
+            // NOTE: important
 			self.earliest_lock_round = self.current_accumulator.round_number();
 			if thought_good {
 				let digest = p_just.digest.clone();
@@ -1094,6 +1160,8 @@ impl Strategy {
 			self.import_and_send_message(message, context, sending);
 			self.local_state = LocalState::Committed;
 		}
+
+	    info!("===>>> Rhd Strategy: leave commit()");
 	}
 
 	fn vote_advance(
@@ -1104,6 +1172,8 @@ impl Strategy {
 	)
 		-> Result<(), ()>
 	{
+	    info!("===>>> Rhd Strategy: enter vote_advance: local_state: {:?}", self.local_state);
+
 		// we can vote for advancement under all circumstances unless we have already.
 		if let LocalState::VoteAdvance = self.local_state { return Ok(()) }
 
@@ -1118,17 +1188,25 @@ impl Strategy {
 
 		// if the timeout has fired, vote to advance round.
 		let round_number = self.current_accumulator.round_number();
+        
+	    info!("===>>> Rhd Strategy: vote_advance: round_number: {:?}", round_number);
+        
 		let _ = self.round_timeout
 			.get_or_insert_with(|| context.begin_round_timeout(round_number).fuse());
 
         let mut round_timeout = self.round_timeout.take().unwrap();
+        
+	    info!("==> Rhd Strategy: to check round_timeout");
+
         match Future::poll(Pin::new(&mut round_timeout), cx) {
             Poll::Ready(()) => {
+	            info!("===>>> Rhd Strategy: poll ready: self.round_timeout");
                 attempt_advance = true;
             },
-            _ => {}
+            _ => {
+                self.round_timeout = Some(round_timeout);
+            }
         }
-        self.round_timeout = Some(round_timeout);
 
 		if attempt_advance {
 			let message = Vote::AdvanceRound(
@@ -1139,10 +1217,14 @@ impl Strategy {
 			self.local_state = LocalState::VoteAdvance;
 		}
 
+	    info!("===>>> Rhd Strategy: leave vote_advance");
+
 		Ok(())
 	}
 
 	fn advance_to_round(&mut self, context: &Context, round: u32, reason: AdvanceRoundReason) {
+	    info!("===>>> Rhd Strategy: enter advance_to_round");
+
 		assert!(round > self.current_round());
 		trace!(target: "bft", "advancing to round {}", round);
 
@@ -1182,8 +1264,11 @@ impl Strategy {
 				context.round_proposer(round),
 			),
 		};
+
+	    info!("===>>> Rhd Strategy: leave advance_to_round");
 	}
 
+    // import to local accumulator and send msg to network
 	fn import_and_send_message(
 		&mut self,
 		message: Message,
@@ -1193,6 +1278,9 @@ impl Strategy {
 		let signed_message = context.sign_local(message);
 		self.import_message(context, signed_message.clone());
 		sending.unbounded_send(Communication::Consensus(signed_message));
+
+	    info!("===>>> Rhd Strategy: in import_and_send_message(): Communication::Consensus msg");
+
 	}
 }
 
@@ -1236,6 +1324,7 @@ impl Future for Agreement {
 		while driving {
             match Stream::poll_next(Pin::new(&mut ag.input), cx) {
                 Poll::Ready(Some(msg)) => {
+		            info!("===>>> Rhd Agreenment Future poll ready: ag.input: {:?}", msg);
                     // here, msg comes from te_rx/input, which was decode at caller, and originally
                     // comes from tc_rx, 
                     match msg {
@@ -1251,6 +1340,7 @@ impl Future for Agreement {
 
 			// drive state machine after handling new input.
 			if let Poll::Ready(just) = ag.strategy.poll(cx, &mut ag.context, &mut ag.output) {
+		        info!("===>>> Rhd Agreenment Future poll ready: ag.strategy.poll. just {:?}", just);
 				ag.concluded = Some(just.clone());
                 // [XXX]: return recursive polling?
 				// return self.poll(cx);

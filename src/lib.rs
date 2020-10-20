@@ -147,10 +147,13 @@ impl Future for RhdWorker {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut FutureContext) -> Poll<Self::Output> {
+        info!("===>>> enter RhdWorker poll:");
+
         // receive protocol msg from bftml, forward it to the rhd engine
         let worker = self.get_mut();
         match Stream::poll_next(Pin::new(&mut worker.tc_rx), cx) {
             Poll::Ready(Some(msg)) => {
+                info!("===>>> poll ready RhdWorker worker.tc_rx. {:?}", msg);
                 // msg reform
                 match msg {
                     BftmlChannelMsg::GossipMsgIncoming(avec) => {
@@ -158,6 +161,7 @@ impl Future for RhdWorker {
                             // [TODO]: decode vec<u8> to type Communication<B>, does this work?
                             //let msg: Communication<B> = avec.decode();
                             let msg: Communication = Decode::decode(&mut &avec[..]).expect("GossipMsgIncoming serialized msg is corrupted.");
+                            info!("===>>> poll ready RhdWorker worker. decoded msg {:?}", msg);
                             
                             // then forward it
                             // because te_tx here is an Option
@@ -179,6 +183,7 @@ impl Future for RhdWorker {
             let mut fe_rx = worker.fe_rx.take().unwrap();
             match Stream::poll_next(Pin::new(&mut fe_rx), cx) {
                 Poll::Ready(Some(msg)) => {
+                    info!("===>>> poll ready RhdWorker fe_rx. msg: {:?}", msg);
                     // msg reform
                     // encode it 
                     // [TODO]: make sure this correct?
@@ -196,12 +201,21 @@ impl Future for RhdWorker {
         // NOTE: try to solve the ownership of gp_rx 
         match Stream::poll_next(Pin::new(&mut worker.gp_rx), cx) {
             Poll::Ready(Some(msg)) => {
+                info!("===>>> poll ready RhdWorker worker.gp_rx");
                 // msg reform
                 match msg {
                     BftmlChannelMsg::GiveProposal(proposal) => {
+                        info!("===>>> poll ready RhdWorker proposal msg: {:?}", proposal);
                         if worker.gpte_tx.is_some() {
+                            info!("===>>> RhdWorker worker.gpte_tx is some");
                             // forward to inner
-                            let _ = worker.gpte_tx.as_ref().map(|c|c.unbounded_send(BftmlChannelMsg::GiveProposal(proposal)));
+                            let _ = worker.gpte_tx.as_ref().map(|c| {
+                                c.unbounded_send(BftmlChannelMsg::GiveProposal(proposal));
+                                info!("===>>> RhdWorker worker.gpte_tx sent proposal");
+                            });
+                        }
+                        else {
+                            info!("===>>> RhdWorker worker.gpte_tx is none");
                         }
                     }
                     _ => {}
@@ -216,15 +230,19 @@ impl Future for RhdWorker {
         }
         
         if worker.agreement_poller.is_some() {
+            info!("===>>> RhdWorker agreement_poller is some.");
             // asure unwrap always works
             let mut agreement_poller = worker.agreement_poller.take().unwrap();
             match Future::poll(Pin::new(&mut agreement_poller), cx) {
                 Poll::Ready(Some(commit_msg)) => {
+                    info!("===>>> poll ready RhdWorker agreement_poller");
                     // the result of poll of agreement is Committed, deal with it
                     // TODO: err handling
                     let candidate = commit_msg.candidate.unwrap();
                     let block_hash = candidate.rhd_hash();
                     let msg = block_hash.as_bytes().to_vec();
+
+                    info!("===>>> poll ready RhdWorker agreement_poller. commit msg: {:?}", msg);
                     worker.cb_tx.unbounded_send(BftmlChannelMsg::CommitBlock(msg));
 
                     // set back
@@ -243,6 +261,7 @@ impl Future for RhdWorker {
             }
         }
 
+        info!("===>>> leave RhdWorker poll:");
         Poll::Pending
     }
 }
@@ -314,6 +333,7 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H, BD>(
 
     rhd_worker.create_agreement_poller();
 
+    info!("===>>> make_rhd_worker_pair, two workers");
     Ok((bftml_worker, rhd_worker))
 }
 
