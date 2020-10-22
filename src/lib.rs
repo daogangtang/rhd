@@ -101,10 +101,10 @@ impl RhdWorker {
         self.gpte_tx = Some(gpte_tx);
 
         // TODO: Modify this to compile to four different nodes, tmp method
-        let pair_key = generate_sr25519_pair("Alice");
+        //let pair_key = generate_sr25519_pair("Alice");
         //let pair_key = generate_sr25519_pair("Bob");
         //let pair_key = generate_sr25519_pair("Charlie");
-        //let pair_key = generate_sr25519_pair("Dave");
+        let pair_key = generate_sr25519_pair("Dave");
 
         let authorities = vec![
             // sr25519::Public::from(Sr25519Keyring::Alice).into(),

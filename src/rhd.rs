@@ -735,7 +735,7 @@ impl Context {
 	/// concluded.
 	fn begin_round_timeout(&mut self, round: u32) -> Box<dyn Future<Output=()> + std::marker::Unpin + Send> {
         // We give timeout 10 seconds for test
-        let timeout = Duration::new(100, 0);
+        let timeout = Duration::new(20, 0);
         let fut = Delay::new(timeout);
 
         Box::new(fut)
