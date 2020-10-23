@@ -309,6 +309,8 @@ impl Accumulator {
 			);
 		}
 
+		info!("==> Accumulator: import_proposal: self.proposal: {:?}, proposal: {:?}", self.proposal, proposal);
+
         // if self.proposal is Some, check it, else do nothing
 		match self.proposal {
 			Some(ref p) if &p.digest != &proposal.digest => {
@@ -380,6 +382,8 @@ impl Accumulator {
 			}
 		};
 
+		info!("==> Accumulator: import_prepare: self.proposal: {:?}", self.proposal);
+
 		// only allow transition to prepare from begin or proposed state.
 		let valid_transition = match self.state {
 			State::Begin | State::Proposed(_) => true,
@@ -423,6 +427,8 @@ impl Accumulator {
 				let count = self.vote_counts.entry(digest.clone()).or_insert_with(Default::default);
 				count.committed += 1;
 
+		        info!("==> Accumulator: import_commit: self.threshold: {:?}, count.committed: {:?}", self.threshold, count.committed);
+
 				if count.committed >= self.threshold as u64 {
 					Some(digest)
 				} else {
@@ -444,6 +450,7 @@ impl Accumulator {
 		};
 
 		info!("==> Accumulator: import_commit: threshold_committed: {:?}", threshold_committed);
+		info!("==> Accumulator: import_commit: self.proposal: {:?}", self.proposal);
 
 		// transition to concluded state always valid.
 		// only weird case is if the prior state was "advanced",
@@ -479,6 +486,7 @@ impl Accumulator {
 
 		if self.advance_round.len() < self.threshold { return Ok(()) }
 		info!("==> Accumulator: Witnessed threshold advance-round messages for round {}", self.round_number);
+		info!("==> Accumulator: import_advance_round: self.proposal: {:?}", self.proposal);
 
 		// allow transition to new round only if we haven't produced a justification
 		// yet.
