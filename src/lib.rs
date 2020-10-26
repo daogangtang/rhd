@@ -6,19 +6,20 @@ use std::collections::hash_map::{HashMap, Entry};
 use log::*;
 
 use futures::{
-    Future, Stream,
+    Future, Stream, FutureExt,
     future::poll_fn,
     task::{Context as FutureContext, Poll},
     executor::LocalPool,
     channel::mpsc::{self, UnboundedSender, UnboundedReceiver},
 };
+use futures_timer::Delay;
 
 use codec::{Codec, Decode, Encode};
 
 // dependencies on substrate
 use sp_core::{H256, Pair as TTPair};
 pub use sp_core::sr25519::{self, Pair, Public as AuthorityId, Signature, LocalizedSignature};
-use sp_runtime::traits::{Block as BlockT};
+use sp_runtime::traits::{Block as BlockT, NumberFor};
 use sp_consensus::{
     Environment, Proposer, SyncOracle, SelectChain, CanAuthorWith,
     import_queue::BoxBlockImport,
@@ -57,7 +58,7 @@ pub struct RhdWorker {
 
     agreement_poller: Option<Agreement>,
 
-    //proposing: bool,
+    sleep_fu: Option<Pin<Box<dyn Future<Output=()> + Send>>>,
 }
 
 impl RhdWorker {
@@ -88,7 +89,7 @@ impl RhdWorker {
             gpte_tx: None,
 
             agreement_poller: None,
-            //proposing: false,
+            sleep_fu: None,
         }
     }
 
@@ -101,10 +102,10 @@ impl RhdWorker {
         self.gpte_tx = Some(gpte_tx);
 
         // TODO: Modify this to compile to four different nodes, tmp method
-        //let pair_key = generate_sr25519_pair("Alice");
+        let pair_key = generate_sr25519_pair("Alice");
         //let pair_key = generate_sr25519_pair("Bob");
         //let pair_key = generate_sr25519_pair("Charlie");
-        let pair_key = generate_sr25519_pair("Dave");
+        //let pair_key = generate_sr25519_pair("Dave");
 
         let authorities = vec![
             // sr25519::Public::from(Sr25519Keyring::Alice).into(),
@@ -140,6 +141,12 @@ impl RhdWorker {
         self.agreement_poller = Some(agreement);
     }
 
+    fn create_sleep_future(&mut self) -> Pin<Box<Future<Output=()>>> {
+        let timeout = Duration::new(5, 0);
+        let fut = Delay::new(timeout);
+
+        fut.boxed()
+    }
 }
 
 // rhd worker main poll
@@ -151,9 +158,28 @@ impl Future for RhdWorker {
 
         // receive protocol msg from bftml, forward it to the rhd engine
         let worker = self.get_mut();
+
+        if worker.sleep_fu.is_none() {
+            worker.create_sleep_future();
+        }
+        if worker.sleep_fu.is_some() {
+            let mut sleep_fu = worker.sleep_fu.take().unwrap();
+            match Future::poll(Pin::new(&mut sleep_fu), cx) {
+                Poll::Ready(_) => {
+                    info!("===>>> poll ready RhdWorker sleep_fu");
+                }
+                _ => {
+                    // restore it
+                    worker.sleep_fu= Some(sleep_fu);
+                    // and return early
+                    return Poll::Pending;
+                }
+            }
+        }
+
         match Stream::poll_next(Pin::new(&mut worker.tc_rx), cx) {
             Poll::Ready(Some(msg)) => {
-                info!("===>>> poll ready RhdWorker worker.tc_rx. {:?}", msg);
+                info!("===>>> poll ready RhdWorker worker.tc_rx");
                 // msg reform
                 match msg {
                     BftmlChannelMsg::GossipMsgIncoming(avec) => {
@@ -161,7 +187,7 @@ impl Future for RhdWorker {
                             // [TODO]: decode vec<u8> to type Communication<B>, does this work?
                             //let msg: Communication<B> = avec.decode();
                             let msg: Communication = Decode::decode(&mut &avec[..]).expect("GossipMsgIncoming serialized msg is corrupted.");
-                            info!("===>>> poll ready RhdWorker worker. decoded msg {:?}", msg);
+                            info!("===>>> poll ready RhdWorker worker. decoded msg");
                             
                             // then forward it
                             // because te_tx here is an Option
@@ -183,7 +209,7 @@ impl Future for RhdWorker {
             let mut fe_rx = worker.fe_rx.take().unwrap();
             match Stream::poll_next(Pin::new(&mut fe_rx), cx) {
                 Poll::Ready(Some(msg)) => {
-                    info!("===>>> poll ready RhdWorker fe_rx. msg: {:?}", msg);
+                    info!("===>>> poll ready RhdWorker fe_rx");
                     // msg reform
                     // encode it 
                     // [TODO]: make sure this correct?
@@ -235,7 +261,7 @@ impl Future for RhdWorker {
             let mut agreement_poller = worker.agreement_poller.take().unwrap();
             match Future::poll(Pin::new(&mut agreement_poller), cx) {
                 Poll::Ready(Some(commit_msg)) => {
-                    info!("===>>> poll ready RhdWorker agreement_poller");
+                    info!("===>>> poll ready RhdWorker agreement_poller: {:?}", commit_msg);
                     // the result of poll of agreement is Committed, deal with it
                     // TODO: err handling
                     let candidate = commit_msg.candidate.unwrap();
@@ -250,9 +276,10 @@ impl Future for RhdWorker {
                     worker.fe_rx = None;
                     worker.gpte_tx = None;
 
-                    // TODO: timer sleep?
-                    // Repeated: continue next agreement/consensus
+                    // Repeated: prepare to continue next agreement/consensus
                     worker.create_agreement_poller();
+                    // set sleep for seconds
+                    worker.create_sleep_future();
                 }
                 _ => {
                     // restore it
@@ -288,6 +315,7 @@ pub fn make_rhd_worker_pair<B, C, E, SO, S, CAW, H, BD>(
     ) -> Result<(impl Future<Output = ()>, impl Future<Output = ()>), sp_consensus::Error> where
     B: BlockT + Clone + Eq,
     B::Hash: std::marker::Unpin,
+    NumberFor<B>: Unpin,
 	C: HeaderBackend<B> + AuxStore + ProvideRuntimeApi<B> + Finalizer<B, BD> + 'static,
     BD: Backend<B> + std::marker::Unpin,
     E: Environment<B> + Send + Sync + std::marker::Unpin,

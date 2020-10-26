@@ -382,7 +382,7 @@ impl Accumulator {
 			}
 		};
 
-		info!("==> Accumulator: import_prepare: self.proposal: {:?}", self.proposal);
+		info!("==> Accumulator: import_prepare: self.proposal: is_some: {}", self.proposal.is_some());
 
 		// only allow transition to prepare from begin or proposed state.
 		let valid_transition = match self.state {
@@ -717,7 +717,7 @@ impl Context {
         Box::new(poll_fn(move |cx: &mut FutureContext| -> Poll<Candidate> {
             match Stream::poll_next(Pin::new(&mut gpte_rx), cx) {
                 Poll::Ready(Some(msg)) => {
-                    info!("===>>> Rhd Context: in proposal: poll ready: gpte_rx: msg: {:?}", msg);
+                    info!("===>>> Rhd Context: in proposal: poll ready: gpte_rx");
                     match msg {
                         BftmlChannelMsg::GiveProposal(proposal) => {
                             Poll::Ready(proposal)
@@ -1007,7 +1007,7 @@ impl Strategy {
 	                info!("===>>> Rhd Strategy: go to poll fetching_proposal future");
                     match Future::poll(Pin::new(&mut fetching_proposal), cx) {
 						Poll::Ready(p) => {
-	                        info!("===>>> Rhd Strategy: poll ready: self.fetching_proposal: proposal: {:?}", p);
+	                        info!("===>>> Rhd Strategy: poll ready: self.fetching_proposal");
                             Some(p)
                         },
 						Poll::Pending => {
@@ -1067,7 +1067,7 @@ impl Strategy {
 
 		// we can't prepare until something was proposed.
 		if let &State::Proposed(ref candidate) = self.current_accumulator.state() {
-	        info!("===>>> Rhd Strategy: State::Proposed: candidate: {:?}", candidate);
+	        info!("===>>> Rhd Strategy: current_accumulator State: Proposed");
 			let digest = context.candidate_digest(candidate);
 
 			// vote to prepare only if we believe the candidate to be valid and
